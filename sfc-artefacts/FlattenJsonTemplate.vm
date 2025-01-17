@@ -1,0 +1,17 @@
+{
+    "schedule": "$schedule",
+    "serial": "$serial",
+    "timestamp": "$timestamp",
+    "OPCUASource_timestamp": "$sources.OPCUASource.timestamp",
+    "OPCUASource_metadata_Some": "$sources.OPCUASource.metadata.Some",
+    "OPCUASource_metadata_Attached": "$sources.OPCUASource.metadata.Attached",
+    "Trigger_value": $sources.OPCUASource.values.Trigger.value,
+    "Trigger_timestamp": "$sources.OPCUASource.values.Trigger.timestamp",
+    "SomeRandomValue_value": $sources.OPCUASource.values.SomeRandomValue.value,
+    "SomeRandomValue_timestamp": "$sources.OPCUASource.values.SomeRandomValue.timestamp",
+    "SomeRandomValue_metadata_More": "$sources.OPCUASource.values.SomeRandomValue.metadata.More",
+    "SomeRandomValue_metadata_Attached": "$sources.OPCUASource.values.SomeRandomValue.metadata.Attached",
+    "RandomValueRounded_value": $sources.OPCUASource.values.RandomValueRounded.value,
+    "RandomValueRounded_timestamp": "$sources.OPCUASource.values.RandomValueRounded.timestamp",
+    "RandomValueRounded_metadata_Digits": "$sources.OPCUASource.values.RandomValueRounded.metadata.Digits"
+}

@@ -1,0 +1,6 @@
+*.pem
+*.cert
+*.key
+**/.DS_Store
+sfc-binaries/*
+!sfc-binaries/README.md

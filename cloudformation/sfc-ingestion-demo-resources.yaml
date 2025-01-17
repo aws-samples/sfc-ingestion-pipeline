@@ -1,0 +1,695 @@
+# This is sample code, for non-production usage. 
+# You should work with your security and legal teams to meet your organizational security, regulatory and compliance requirements before deployment”
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy a demo SFC igestion pipeline using AWS IoT Core, Amazon Data
+  Firehose and AWS Glue.
+
+Parameters:
+  OPCUAGatewayName:
+    Description: Name of IoT thing used for OPC-UA gateway.
+    Type: String
+    Default: my_opcua_gateway_1
+  IoTTopicPrefix:
+    Description: Prefix of the IoT Topic to send data to. Must end with /
+    Type: String
+    Default: opcua/device/
+    AllowedPattern: ^[a-z0-9-_\/]+\/$
+  GlueDatabaseName:
+    Description: Name of Glue Database to be created for this demo
+    Type: String
+    Default: sfc-ingestion-demo-db
+  PythonVersion:
+    Description: Python version to be used for custom resource Lambdas, e.g. '3.12'.
+    Type: String
+    Default: 3.12
+
+Resources:
+
+  ### The resources section consists of four main parts:
+  ### Part 1: Deal with provisioning the resources needed for connectivity
+  ### Part 2: Contains resources for ingestion pipeline
+  ### Part 3: Resources needed for analytics leveraging AWS Glue
+  ### Part 4: Contains resources for cleanup of the stack
+
+  ## Part 1: Deals with automated resource provisioning needed to connect SFC 
+
+  # An S3 Bucket storing keys and certificates for the OPC-UA gateway
+  S3BucketForCertificatesAndKeys:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteDataAutomatically
+            Status: Enabled
+            ExpirationInDays: 1
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # An IoT Core Thing representing the OPC-UA gateway
+  OPCUAGatewayThing:
+    Type: AWS::IoT::Thing
+    Properties:
+      ThingName: !Ref OPCUAGatewayName
+
+  # Policy allowing the gateway to assume a role
+  IoTPolicyForGateway:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iot:AssumeRoleWithCertificate
+            Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rolealias/${OPCUAGatewayName}
+
+  # An IoT Core Role Alias and corresponding IAM Role to be used by OPC-UA gateway
+  IoTRoleAlias:
+    Type: AWS::IoT::RoleAlias
+    Properties:
+      RoleAlias: !Ref OPCUAGatewayName
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${OPCUAGatewayRole}
+
+  # The IAM role to be assumed by the gateway
+  OPCUAGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: credentials.iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IoTPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                  - iot:RetainPublish
+                Resource: !Sub arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IoTTopicPrefix}*
+              - Effect: Allow
+                Action:
+                  - iot:DescribeEndpoint
+                Resource: '*'
+
+  IotThingCertificateSetupLambdaLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${IotThingCertificateSetupLambda}
+      RetentionInDays: 7
+
+  # Lambda function for creating keys
+  IotThingCertificateSetupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          # creates certificate and keys
+          # attaches certificate and key to thing
+          # stores certificate and keys in s3
+          import json
+          import boto3
+          import cfnresponse
+          s3_resource = boto3.resource("s3")
+          iot_client=boto3.client("iot")
+          def lambda_handler(event, context):
+            the_event = event['RequestType']
+            return_message = "routine not started"
+            if the_event in ('Create', 'Update'):
+              thing_name = event['ResourceProperties']['ThingName']
+              thing_policy_name = event['ResourceProperties']['ThingPolicyName']
+              s3_bucket = event['ResourceProperties']['TargetBucket']
+              # create an active certificate and keys
+              response = iot_client.create_keys_and_certificate(setAsActive=True)
+              certificate_arn = response['certificateArn']
+              certificate_pem = response['certificatePem']
+              key_pair = response['keyPair']
+              public_key = key_pair['PublicKey']
+              private_key = key_pair['PrivateKey']
+              # attach certificate to thing
+              iot_client.attach_thing_principal(
+                thingName=thing_name,
+                principal=certificate_arn
+              )
+              # attach policy to certificate
+              iot_client.attach_policy(
+                policyName=thing_policy_name,
+                target=certificate_arn
+              )
+              # store certificates in S3 for this demo setup
+              # Important: Storing private key in S3 is not recommended for production scenarios!
+              prefix = thing_name + "/" + thing_name
+              s3_resource.Object(s3_bucket, prefix + "_certificate.pem").put(
+                Body=certificate_pem
+              )
+              s3_resource.Object(s3_bucket, prefix + ".private.key").put(
+                Body=private_key
+              )
+              return_message="""Private key and certficate for thing {} stored in bucket {}. \n
+                Objects will be deleted after one day.
+                Do not use this approach in prodcution scenarios.
+                """.format(thing_name, s3_bucket)
+              print(return_message)
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {"message": return_message})
+      Handler: index.lambda_handler
+      Role: !GetAtt IotThingCertificateSetupLambdaRole.Arn
+      Runtime: !Sub python${PythonVersion}
+      Timeout: 10
+
+  # A custom resource that will execute the Lambda function
+  IotThingCertificateSetupLambdaResource:
+    Type: Custom::IotThingCertificateSetupLambda
+    Properties:
+      ServiceToken: !GetAtt IotThingCertificateSetupLambda.Arn
+      ThingName: !Ref OPCUAGatewayThing
+      ThingPolicyName: !Ref IoTPolicyForGateway
+      TargetBucket: !Ref S3BucketForCertificatesAndKeys
+
+  IotThingCertificateSetupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IotThingCertificateSetupLambdaRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:AttachThingPrincipal
+                  - iot:AttachPolicy
+                  - iot:CreateKeysAndCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub ${S3BucketForCertificatesAndKeys.Arn}/*
+                Condition:
+                  StringEquals:
+                    s3:ResourceAccount: !Sub ${AWS::AccountId}
+
+  ## Part 2: Deals with setting up the ingestion pipeline
+
+  # S3 Bucket storing the ingested OPC UA data
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+      LoggingConfiguration:
+        LogFilePrefix: logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # IoT Rule forwarding data to Firehose Delivery Stream.
+  # Data can be transformed and enriched within the SQL statement of the rule.
+  # Here a link to the SQL reference for AWS IoT Rules:
+  # https://docs.aws.amazon.com/iot/latest/developerguide/iot-sql-reference.html
+  IoTToFirehoseRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      TopicRulePayload:
+        Actions:
+          - Firehose:
+              RoleArn: !GetAtt IoTFirehosePutRecordRole.Arn
+              DeliveryStreamName: !Ref FirehoseDeliveryStream
+              Separator: "\n"
+        AwsIotSqlVersion: '2016-03-23'
+        Description: This rule receives data and sends them to S3 Bucket by aggregating
+          in Kinesis Firehose.
+        RuleDisabled: false
+        Sql: !Sub "SELECT  timestamp() as timestamp_cloud,  uuid() as
+          unique_id,  topic() as mqtt_topic, accountid() as aws_account_id, *
+          FROM '${IoTTopicPrefix}${OPCUAGatewayName}'"
+
+  # Firehose Delivery stream using a Transformation Lambda.
+  # This Lambda can be used to transform or enrich data in the stream
+  FirehoseDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt DataBucket.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 1
+        Prefix: !Sub ${OPCUAGatewayName}/
+        RoleARN: !GetAtt FirehosePutS3Role.Arn
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !Sub ${FirehoseTransformLambda.Arn}:$LATEST
+                - ParameterName: RoleArn
+                  ParameterValue: !GetAtt FirehoseLambdaInvokeRole.Arn
+      DeliveryStreamEncryptionConfigurationInput:
+        KeyType: AWS_OWNED_CMK
+
+  FirehoseTransformLambdaLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${FirehoseTransformLambda}
+      RetentionInDays: 7
+
+  TransformLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # The Lambda fucntion that will transform the data in the Firehsoe stream.
+  # Here enrichment can take place, e.g. by implementing a call to an MES-System
+  FirehoseTransformLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.function_handler
+      Runtime: !Sub python${PythonVersion}
+      Role: !GetAtt TransformLambdaRole.Arn
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import json
+          import base64
+          def function_handler(event, context):
+            records = []
+            for record in event["records"]:
+              # Get data field of the record in json format. It is a base64 encoded string.
+              json_data = json.loads(base64.b64decode(record["data"]))
+              # Make a call to your MES and get data
+              mock_data = "Some Mock Data"
+              # Append shipId to the actual record data
+              enriched_data = json_data
+              enriched_data["mes_data"] = mock_data
+              # Encode the enriched record to base64
+              json_string = json.dumps(enriched_data).encode("ascii")
+              b64_encoded_data = base64.b64encode(json_string).decode("ascii")
+              # Create a record with enriched data and return back to Firehose
+              rec = {'recordId': record["recordId"], 'result': 'Ok', 'data': b64_encoded_data}
+              records.append(rec)
+            return {'records': records}
+
+  # allows the IoT Core rule to deliver data to the firehose data stream
+  IoTFirehosePutRecordRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - iot.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: iot-firehose-put
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: firehose:PutRecord
+                Resource: !GetAtt FirehoseDeliveryStream.Arn
+
+  # Allows the Firehsoe data stream to send data to an S3 bucket
+  FirehosePutS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - firehose.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: firehose-s3-put
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${DataBucket.Arn}/*
+                Condition:
+                  StringEquals:
+                    s3:ResourceAccount: !Sub ${AWS::AccountId}
+
+  # allows Firehose data stream to invoke a lambda function
+  FirehoseLambdaInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - firehose.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:GetFunctionConfiguration
+                Resource: !Sub ${FirehoseTransformLambda.Arn}:*
+
+  ## Part 3: Resources used for analytics
+
+  # allows Glue crawler to crawl the data
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: S3BucketAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub ${DataBucket.Arn}/*
+                  - !Sub ${DataBucket.Arn}
+                Condition:
+                  StringEquals:
+                    s3:ResourceAccount: !Sub ${AWS::AccountId}
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*:/aws-glue/*
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:GetPartition
+                  - glue:BatchGetPartition
+                  - glue:GetPartitions
+                  - glue:BatchCreatePartition
+                  - glue:CreatePartition
+                  - glue:UpdatePartition
+                Resource:
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabase}
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabase}/*
+
+  # Glue database representing the ingested data
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+        Description: Glue database containing ingested data
+
+  # a Crawler that will infer the schema of the data and populate the database
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub ${GlueDatabaseName}-crawler
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Ref DataBucket
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  ## Part 4: Cleanup of the stack
+
+  IotThingCertificateDeleteLambdaLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${IotThingCertificateDeleteLambda}
+      RetentionInDays: 7
+
+  # Deletes IoT certificates and corresponding files in S3
+  IotThingCertificateDeleteLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          # deletes certificatesfrom IoT
+          # delets certificates and keys from S3
+          import json
+          import boto3
+          import time
+          import cfnresponse
+          from botocore.exceptions import ClientError
+          # delete all objects from S3
+          def delete_s3_objects_with_prefix(s3_client, bucket_name, prefix):
+            # List all objects in the bucket with the given prefix
+            paginator = s3_client.get_paginator('list_objects_v2')
+            # Iterate through all objects and delete them
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+              if 'Contents' in page:
+                objects_to_delete = [{'Key': obj['Key']} for obj in page['Contents']]
+                if objects_to_delete:
+                  s3_client.delete_objects(Bucket=bucket_name, Delete={'Objects': objects_to_delete})
+          def get_principals(iot_client, thing_name):
+            paginator = iot_client.get_paginator('list_thing_principals')
+            page_iterator = paginator.paginate(thingName=thing_name)
+            principals = []
+            for page in page_iterator:
+              principals.extend(page['principals'])
+            return principals
+          def detach_principal_and_policy(iot_client, thing_name, principals, thing_policy_name):
+            for principal in principals:
+              iot_client.detach_thing_principal(
+                principal=principal,
+                thingName=thing_name
+              )
+              iot_client.detach_policy(
+                policyName=thing_policy_name,
+                target=principal
+              )
+          def delete_certificates(iot_client, principals):
+            for principal in principals:
+              certId=principal.split("/")[1]
+              iot_client.update_certificate(
+                certificateId=certId,
+                newStatus='INACTIVE'
+              )
+              iot_client.delete_certificate(
+                certificateId=certId,
+                forceDelete=True
+              )
+          iot_client=boto3.client("iot")
+          s3_client = boto3.client('s3')
+          def lambda_handler(event, context):
+            the_event = event['RequestType']
+            return_message = "routine not started"
+            if the_event in ('Delete'):
+              thing_name = event['ResourceProperties']['ThingName']
+              thing_policy_name = event['ResourceProperties']['ThingPolicyName']
+              s3_bucket = event['ResourceProperties']['TargetBucket']
+              principals = get_principals(iot_client, thing_name)
+              try:
+                detach_principal_and_policy(iot_client, thing_name, principals, thing_policy_name)
+              except Exception as e:
+                print(f"Error: {str(e)}")
+                cfnresponse.send(event, context, cfnresponse.FAILED, {"message": str(e)})
+              # Wait for the detachments to take effect
+              time.sleep(10)
+              try:
+                delete_certificates(iot_client, principals)
+              except Exception as e:
+                print(f"Error: {str(e)}")
+                cfnresponse.send(event, context, cfnresponse.FAILED, {"message": str(e)})
+              delete_s3_objects_with_prefix(s3_client, s3_bucket, thing_name)
+              return_message="""Certificates detached an deleted for thing {}.""".format(thing_name)
+              print(return_message)
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {"message": return_message})
+      Handler: index.lambda_handler
+      Role: !GetAtt IotThingCertificateDeleteLambdaRole.Arn
+      Runtime: !Sub python${PythonVersion}
+      Timeout: 15
+
+  IotThingCertificateDeleteLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IotThingCertificateSetupLambdaRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:ListThingPrincipals
+                  - iot:DetachThingPrincipal
+                  - iot:DeleteThingPrincipal
+                  - iot:DetachPolicy
+                  - iot:UpdateCertificate
+                  - iot:DeleteCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub ${S3BucketForCertificatesAndKeys.Arn}/*
+                  - !Sub ${S3BucketForCertificatesAndKeys.Arn}
+                Condition:
+                  StringEquals:
+                    s3:ResourceAccount: !Sub ${AWS::AccountId}
+
+  # a custom resource that will execute the Lambda function
+  IotThingCertificateDeleteLambdaResource:
+    Type: Custom::IotThingCertificateDeleteLambda
+    Properties:
+      ServiceToken: !GetAtt IotThingCertificateDeleteLambda.Arn
+      SeviceTimeout: 60
+      ThingName: !Ref OPCUAGatewayThing
+      ThingPolicyName: !Ref IoTPolicyForGateway
+      TargetBucket: !Ref S3BucketForCertificatesAndKeys
+
+  EmptyDataBucketLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EmptyDataBucketLambda}
+      RetentionInDays: 7
+
+  # a Lambda function deleting all data in an S3 bucket so the bucket can be deleted
+  EmptyDataBucketLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          s3 = boto3.resource('s3')
+          def lambda_handler(event, context):
+            the_event = event['RequestType']
+            return_message = "routine not started"
+            if the_event in ('Delete'):
+              s3_bucket = event['ResourceProperties']['TargetBucket']
+              bucket = s3.Bucket(s3_bucket)
+              bucket.objects.all().delete()
+              return_message="""All objects in bucket '{}' deleted.""".format(s3_bucket)
+              print(return_message)
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {"message": return_message})
+      Handler: index.lambda_handler
+      Role: !GetAtt EmptyDataBucketLambdaRole.Arn
+      Runtime: !Sub python${PythonVersion}
+      Timeout: 15
+
+  EmptyDataBucketLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IotThingCertificateSetupLambdaRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub ${DataBucket.Arn}/*
+                  - !Sub ${DataBucket.Arn}
+                Condition:
+                  StringEquals:
+                    s3:ResourceAccount: !Sub ${AWS::AccountId}
+  
+  # a custom resource that will execute the Lambda function
+  EmptyDataBucketLambdaRoleResource:
+    Type: Custom::EmptyDataBucketLambda
+    Properties:
+      ServiceToken: !GetAtt EmptyDataBucketLambda.Arn
+      SeviceTimeout: 60
+      TargetBucket: !Ref DataBucket
+
+Outputs:
+
+  S3DataBucketLink:
+    Description: Link to S3 Bucket where data is stored.
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/s3/home?region=${AWS::Region}&bucket=${DataBucket}
+
+  CertificatesAndKeysBucket:
+    Description: |
+      For demo purposes, we use this S3 bucket to store certificates and keys. Save to project in "sfc-artefacts/auth" folder. File used for sfc-config.json AwsIotCredentialProviderClient resource config.
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/s3/home?region=${AWS::Region}&bucket=${S3BucketForCertificatesAndKeys}
+
+  RootCa:
+    Description: |
+      Root CA file, save to project as "root-CA.pem" in "sfc-artefacts/auth" folder. File used for sfc-config.json AwsIotCredentialProviderClient resource config.
+    Value: https://www.amazontrust.com/repository/AmazonRootCA1.pem
+
+  IotCredentialEndpoint:
+    Description: |
+      Run this command to obtain the credentials endpoint for the IoT device. Endpoint to be used for sfc-config.json AwsIotCredentialProviderClient resource config.
+    Value: aws iot describe-endpoint --endpoint-type iot:CredentialProvider --output text

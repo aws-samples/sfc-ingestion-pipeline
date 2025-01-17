@@ -1,0 +1,156 @@
+  {
+    "AWSVersion": "2022-04-02",
+    "Name": "OPCUA to AWS Data Ingestion Demo",
+    "Version": 1,
+    "LogLevel": "Info",
+    "ElementNames": {
+      "Value": "value",
+      "Timestamp": "timestamp",
+      "Metadata": "metadata"
+    },
+    "Metadata": {
+      "Attached": "...to every message"
+    },    
+    "AwsIotCredentialProviderClients": {
+        "AwsIotClient": {
+          "IotCredentialEndpoint": "<MY_IOT_CREDENTIALS_ENDPOINT>",
+          "RoleAlias": "my_opcua_gateway_1",
+          "ThingName": "my_opcua_gateway_1",
+          "CertificateFile": "sfc-artefacts/auth/my_opcua_gateway_1_certificate.pem",
+          "PrivateKeyFile": "sfc-artefacts/auth/my_opcua_gateway_1.private.key",
+          "RootCa":  "sfc-artefacts/auth/root-CA.pem"
+        }
+    }, 
+    "Schedules": [
+      {
+        "Name": "OpcuaToIotCore",
+        "Interval": 1000,
+        "Description": "Read data from OPC UA tags and send it IoT Core to demo filters",
+        "Active": true,
+        "TimestampLevel": "Both",
+        "Sources": {
+          "OPCUASource": [
+            "*"
+          ]
+        },
+        "Targets": [
+          "IoTCoreTarget",
+          "DebugTarget"
+        ]
+      }
+    ],
+    "ChangeFilters": {
+      "ChangedBy3": {
+        "Type": "Absolute",
+        "Value": 3,
+        "AtLeast": 60000
+      }
+    },
+    "ValueFilters": {
+      "Greater0": {
+        "Operator": "gt",
+        "Value": 0
+      }
+    },    
+    "ConditionFilters": {
+      "TriggerFired": {
+        "Operator": "present",
+        "Value": ["TriggerTag"]
+      }
+    },
+    "Transformations": {
+      "TwoDigits": [
+        {"Operator": "TruncAt", "Operand": 2}
+      ]
+    },
+    "Sources": {
+      "OPCUASource": {
+        "Name": "OPCUASource",
+        "ProtocolAdapter": "OPC-UA",
+        "AdapterOpcuaServer": "OPCUA-SERVER-1",
+        "Description": "Remote OPCUA test server",
+        "SourceReadingMode": "Subscribing",
+        "SubscribePublishingInterval": 100,
+        "Metadata": {
+          "Some": "...arbitrary data",
+          "Attached": "...to every message"
+        },
+        "Channels": {
+          "TriggerTag": {
+            "Name": "Trigger",
+            "NodeId": "ns=3;i=1005",
+            "ChangeFilter": "ChangedBy3",
+            "ValueFilter": "Greater0"
+          },
+          "DataTagToReadWhenTriggerFired": {
+            "Name": "SomeRandomValue",
+            "NodeId": "ns=3;i=1002",
+            "ConditionFilter": "TriggerFired",
+            "Metadata": {
+              "More": "Metadata",
+              "Attached": "...to this channel"
+            }
+          },
+          "Rounded2Digits": {
+            "Name": "RandomValueRounded",
+            "NodeId": "ns=3;i=1002",
+            "ConditionFilter": "TriggerFired",
+            "Transformation": "TwoDigits",
+            "Metadata": {
+              "Digits": 2
+            }
+          }       
+        }
+      }
+    },
+    "Targets": {
+      "DebugTarget": {
+        "Active": true,
+        "TargetType": "DEBUG-TARGET"    
+      },
+      "IoTCoreTarget": {
+        "Active": true,
+        "TargetType": "AWS-IOT-CORE",
+        "Region": "eu-central-1",
+        "TopicName": "opcua/device/my_opcua_gateway_1",
+        "CredentialProviderClient" :"AwsIotClient",
+        "Template": "./sfc-artefacts/FlattenJsonTemplate.vm"    
+      }
+  },    
+    "TargetTypes": {
+      "DEBUG-TARGET": {
+        "JarFiles": [
+          "./sfc-binaries/debug-target/lib"
+        ],
+        "FactoryClassName": "com.amazonaws.sfc.debugtarget.DebugTargetWriter"
+      },
+      "AWS-IOT-CORE": {
+        "JarFiles": [
+          "./sfc-binaries/aws-iot-core-target/lib"
+        ],
+        "FactoryClassName": "com.amazonaws.sfc.awsiotcore.AwsIotCoreTargetWriter"
+      }    
+    },
+    "AdapterTypes": {
+      "OPCUA": {
+        "JarFiles": [
+          "./sfc-binaries/opcua/lib"
+        ],
+        "FactoryClassName": "com.amazonaws.sfc.opcua.OpcuaAdapter"
+      }
+    },
+    "ProtocolAdapters": {
+      "OPC-UA": {
+        "AdapterType": "OPCUA",
+        "OpcuaServers": {
+          "OPCUA-SERVER-1": {
+            "Address": "opc.tcp://uademo.prosysopc.com",
+            "Path": "OPCUA/SimulationServer",
+            "Port": 53530,
+            "ConnectTimeout": "10000",
+            "ReadBatchSize": 500
+          }
+        }
+      }
+    }
+  }
