@@ -1,1 +1,1 @@
-This folder will host SFC binaries.
+This folder is for SFC binaries.
