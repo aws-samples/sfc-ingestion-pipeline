@@ -20,11 +20,11 @@ Trigger tag (NodeId "ns=3;i=1005"):
 • Provides the values -2, -2, 2, 2 at one-second intervals ("square")  
 • Data transmission only occurs when the value changes from -2 to 2  
 
-The data is then routed to AWS IoT Core, which enables almost real-time server-side filtering, transformation, and routing to different destinations with rules, as in this example, or via pub/sub through MQTT.
+The data is then routed to AWS IoT Core, which enables almost real-time server-side [filtering, transformation](https://docs.aws.amazon.com/de_de/iot/latest/developerguide/iot-sql-functions.html), and routing to different destinations with rules, as in this example, or via pub/sub through MQTT.
 
 From AWS IoT Core, we send data to Amazon Data Firehose, which allows server-side data transformation before storage with built-in retry mechanisms, buffering, and optional compression to optimize storage consumption.
 
-Note that SFC itself can also batch and [transform data](https://docs.aws.amazon.com/de_de/iot/latest/developerguide/iot-sql-functions.html) as well as send data to different targets. It depends on your requirements which option you prefer. This architecture is meant as a starting point rather than a one-size-fits-all solution.
+Note that SFC itself can also batch and transform data as well as send data to different targets. It depends on your requirements which option you prefer. This architecture is meant as a starting point rather than a one-size-fits-all solution.
 
 ![](./img/sfc-ingestion-demo_en.png)
 
@@ -50,7 +50,7 @@ Note that SFC itself can also batch and [transform data](https://docs.aws.amazon
     1. Sign in to your AWS account and open the CloudFormation console: https://console.aws.amazon.com/cloudformation/home?region=eu-central-1.  
     Make sure you're in the 'eu-central-1' (Frankfurt) region for this configuration.
     2. Click on "Create stack".
-    3. Choose "Upload a template" and upload the CloudFormation template 'cloudformation/sfc-ingestion-demo.yaml' and follow the menu.
+    3. Choose "Upload a template" and upload the CloudFormation template 'cloudformation/sfc-ingestion-demo-resources.yaml' and follow the menu.
     4. In the next step, enter a name for the stack. Leave all other settings unchanged and follow the menu.
     5. Confirm the checkbox "I acknowledge that AWS CloudFormation might create IAM resources."
     6. Click the "Submit" button at the end of the process to start the stack deployment.
