@@ -11,14 +11,20 @@ In the following sample, we will read and archive machine data via OPC UA. We wi
 We will connect SFC (Shopfloor Connectivity) to a public OPC UA Server and read two tags:
 
 Data tag (NodeId "ns=3;i=1002"):  
-• Provides random numbers in the range of -2 to 2.  
-• Is transmitted twice: once in original form and once rounded to two decimal places
+• Provides random numbers in the range of -2 to 2  
+• Is transmitted twice: once in original form and once rounded to two decimal places  
 The resulting two channels are connected to the trigger tag via a condition filter and 
-therefore depends on the trigger tag.  
+therefore depend on the trigger tag.  
 
 Trigger tag (NodeId "ns=3;i=1005"):  
-• Provides the values -2, -2, 2, 2 at one-second intervals ("square").  
-• Data transmission only occurs when the value changes from -2 to 2.  
+• Provides the values -2, -2, 2, 2 at one-second intervals ("square")  
+• Data transmission only occurs when the value changes from -2 to 2  
+
+The data is then routed to AWS IoT Core, which enables almost real-time server-side filtering, transformation, and routing to different destinations with rules, as in this example, or via pub/sub through MQTT.
+
+From AWS IoT Core, we send data to Amazon Data Firehose, which allows server-side data transformation before storage with built-in retry mechanisms, buffering, and optional compression to optimize storage consumption.
+
+Note that SFC itself can also batch and [transform data](https://docs.aws.amazon.com/de_de/iot/latest/developerguide/iot-sql-functions.html) as well as send data to different targets. It depends on your requirements which option you prefer. This architecture is meant as a starting point rather than a one-size-fits-all solution.
 
 ![](./img/sfc-ingestion-demo_en.png)
 
@@ -85,4 +91,4 @@ Trigger tag (NodeId "ns=3;i=1005"):
 6. Cleanup  
 The stack is build to cleanup all the provisioned resources when deleted.  
 Mind the bucket you might have created for Amazon Athena query output, you need to delete 
-it manually if you dont want to keep it.
+it manually if you dont want to keep it for further usage of Amazon Athena.

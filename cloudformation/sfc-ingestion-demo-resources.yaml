@@ -243,7 +243,8 @@ Resources:
           FROM '${IoTTopicPrefix}${OPCUAGatewayName}'"
 
   # Firehose Delivery stream using a Transformation Lambda.
-  # This Lambda can be used to transform or enrich data in the stream
+  # This Lambda can be used to transform or enrich data in the stream.
+  # You can optionally add compression for the output to optiize storage consumption.
   FirehoseDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
