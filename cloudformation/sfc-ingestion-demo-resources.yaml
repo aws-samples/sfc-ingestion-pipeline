@@ -313,8 +313,9 @@ Resources:
               enriched_data = json_data
               enriched_data["mes_data"] = mock_data
               # Encode the enriched record to base64
-              json_string = json.dumps(enriched_data).encode("ascii")
-              b64_encoded_data = base64.b64encode(json_string).decode("ascii")
+              # The linebreak ensures every object is treated as table row 
+              json_string = json.dumps(enriched_data) + "\n"
+              b64_encoded_data = base64.b64encode(json_string.encode('utf-8')).decode('utf-8')
               # Create a record with enriched data and return back to Firehose
               rec = {'recordId': record["recordId"], 'result': 'Ok', 'data': b64_encoded_data}
               records.append(rec)
